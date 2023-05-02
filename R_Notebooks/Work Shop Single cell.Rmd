@@ -1,0 +1,250 @@
+---
+title: "An Introduction to Single Cell RNA-Seq Analysis"
+output:
+  html_notebook: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+## International Cancer Genomics Conference
+
+**Spring 2023, Tehran, Iran**
+
+Arsham Mikaeili Namini
+
+## Section 1 . Loading the libraries and the data
+
+### Goals
+
+in this section you will be:
+
+-   Installing the Seurat and other necessary packages.
+
+-   Learn 10X Genomics data structure and `Read10X()` function.
+
+-   Creating an Seurat object and performing the initial quality controls tools.
+
+### Tools
+
+As you can see some of the packages are not available in CRAN, so we have to install them from Bioconductor. Please make sure to set BioC repositories on from `setRepositories()` function.
+
+```{r}
+# if you already install the package you can skip the next lines
+#install.packages("Seurat")
+#install.packages("SeuratData")
+#install.packages("patchwork")
+#install.packages("dplyr")
+#install.packages("ggplot2")
+# loading the packages
+library(Seurat)
+library(SeuratData)
+library(patchwork)
+library(dplyr)
+library(ggplot2)
+```
+
+We need to read our data and construct a count matrix.
+
+```{r}
+pbmc.data <- Read10X('~/desktop/Single Cell/Own Project/Data/GSE189357_RAW/GSM5699781_TD5/')
+```
+
+```{r}
+pbmc.data[c("CD3D", "TCL1A", "MS4A1"), 1:30]
+```
+
+Seurat package recommend to perform inotial filter on the data set based on two parameters:
+
+`min.cells` : Include features detected in at least this many cells.
+
+-   *Will subset the counts matrix as well. To reintroduce excluded features, create a new object with a lower cutoff.*
+
+`min.features` : Include cells where at least this many features are detected.
+
+```{r}
+pbmc <- CreateSeuratObject(counts = pbmc.data, project = "NSCLC", min.cells = 3, min.features = 200)
+pbmc
+```
+
+```{r}
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+head(pbmc$percent.mt)
+```
+
+```{r}
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+```{r}
+library(ggplot2)
+ggplot(data = pbmc@meta.data, aes(x = nFeature_RNA)) + geom_density() + geom_vline(xintercept = c(300, 1500), color = 2, linetype = 2)
+```
+
+```{r}
+ggplot(data = pbmc@meta.data, aes(x = nCount_RNA)) + geom_density() + 
+  geom_vline(xintercept = 6500, color = 2, linetype = 2)
+```
+
+```{r}
+ggplot(data = pbmc@meta.data, aes(x = percent.mt)) + geom_density() + 
+  geom_vline(xintercept = 10, color = 2, linetype = 2)
+```
+
+```{r}
+pbmc
+pbmc <- subset(x = pbmc, subset = nFeature_RNA < 1500 & nFeature_RNA > 300 & nCount_RNA < 6500 & percent.mt < 10)
+pbmc
+```
+
+```{r}
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+## Section 2 . Normalizing and Scaling the data
+
+### Goals
+
+-   Gain a perspective about normalization and scaling data in Seurat package.
+
+-   Know about highly variable features in the data set and why we are interested in these genes.
+
+-   Get a viewpoint on `NormalizeData()` and `ScaleData()` functions.
+
+### Normalizing the data
+
+Seurat package uses log normalization for normalizing the data, you can manipulate the scale factor manually but it is set on 10,000 on default setting. Normalized values are stored in `pbmc[["RNA"]]@data` .
+
+```{r,fig.align='center'}
+plot(pbmc@meta.data$nCount_RNA)
+```
+
+```{r}
+pbmc <- NormalizeData(pbmc, 
+                      normalization.method = "LogNormalize", 
+                      scale.factor = 10000)
+```
+
+```{r, fig.align='center'}
+plot(pbmc@assays$RNA@counts@p)
+```
+
+### Identification of highly variable features (feature selection)
+
+We next calculate a subset of features that exhibit high cell-to-cell variation in the data set. **In other word we want to find genes that shows a difference expression behavior on our cells.** Scientist have found that focusing on these genes in downstream analysis helps to highlight biological signal in single-cell data sets.
+
+```{r}
+pbmc <- FindVariableFeatures(object = pbmc, 
+                             selection.method = "vst", 
+                             nfeatures = 2000)
+pbmc
+```
+
+```{r,warning=FALSE}
+top10 <- head(VariableFeatures(pbmc), 10)
+plot1 <- VariableFeaturePlot(pbmc)
+plot1
+```
+
+```{r, warning=FALSE}
+LabelPoints(plot = plot1, points = top10, 
+                     xnudge = 0, ynudge = 0, 
+                     repel = T)
+```
+
+### Scaling the data
+
+Before performing any dimensional reduction techniques (linear or non-linear) we need to perform a **linear transformer (scaling)**. To do that we use `ScaleData()` function. This function done two important things to our data:
+
+1.  Shifts the expression of each gene, so that the mean expression across cells is 0.
+
+2.  Scales the expression of each gene, so that the variance across cells is 1.
+
+    -   *This step gives equal weight in downstream analyses, so that highly-expressed genes do not dominate.*
+
+```{r, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE}
+all.genes <- rownames(pbmc)
+pbmc <- ScaleData(object = pbmc, features = all.genes)
+```
+
+Subsequently we perform the Principal component analysis (PCA) on the data in order to perform dimensional reduction to the samples and features.
+
+According to our data each cell is a vector contains 22321 genes, in other word, each cell has 22321 dimensions and there is 14644 after multiple filtration. There are three main reasons to perform a PCA on our data:
+
+1.  Since many genes are highly correlate (co-expressed), the real dimensionality of the data is much lower that 22321.
+
+2.  High dimensional data is hard and inefficient to work for subsequent analyses (i.e curse of dimensionality).
+
+3.  Detecting the technical noise in our scRNA-seq data and helps us a lot in removing outliers.
+
+To sum up, first PCs are related to biological heterogenity and higher PCs are related to technical noise.
+
+```         
+![](Screenshot%202023-05-01%20at%206.16.54%20PM.png){width="1000"}
+```
+
+```{r, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE }
+pbmc <- RunPCA(object = pbmc, 
+               features = VariableFeatures(object = pbmc))
+```
+
+```{r}
+VizDimLoadings(pbmc, dims = 1:2, reduction = "pca")
+```
+
+```{r}
+DimPlot(pbmc, reduction = "pca")
+```
+
+An alternative heuristic method generates an 'Elbow plot': a ranking of principle components based on the percentage of variance explained by each one (`ElbowPlot()` function).
+
+```{r}
+ElbowPlot(pbmc)
+```
+
+In this example, we can observe an 'elbow' around PC18-19, suggesting that the majority of true signal is captured in the first 15 PCs.
+
+## Section 3 . Cluster the cells
+
+### Goals
+
+-   
+
+```{r, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE}
+pbmc <- FindNeighbors(pbmc, dims = 1:15)
+```
+
+```{r, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE}
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+```
+
+```{r, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE}
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+```
+
+We need to visualize the demention reduction plot which we just created from UMAP.
+
+```{r}
+DimPlot(pbmc, reduction = "umap")
+```
+
+```{r, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE}
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+```
+### Finding differentially expressed features (cluster biomarkers)
+
+As you can tell we cannot annotate any cell types to the clusters we just created, we need to utlize the explicit gene expression related to diffrent cell types. 
+```{r, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE}
+pbmc.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = avg_log2FC)
+```
+```{r}
+cluster2.markers <- FindMarkers(pbmc, ident.1 = 2, min.pct = 0.25)
+head(cluster2.markers, n = 5)
+plot(cluster2.markers$avg_log2FC)
+```
+```{r}
+cluster0.markers <- FindMarkers(pbmc, ident.1 = 0, logfc.threshold = 0.25, test.use = "roc", only.pos = TRUE)
+```
+
